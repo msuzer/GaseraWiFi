@@ -8,7 +8,7 @@
  *
  */
 
-#include "stepper.h"
+ #include "brush.h"
 #include "gasera.h"
 #include "sys_config.h"
 #include "sys_timer.h"
@@ -16,12 +16,15 @@
 #include <WiFiEspAT.h>
 #include <GyverOLED.h>
 
-#define EnaGndPin 2  //ENA- GRAY
-#define EnaVccPin 3  //ENA+ WHITE
-#define DirGndPin 5  //DIR- BROWN
-#define DirVccPin 6  //DIR+ PINK
-#define PulGndPin 7  //PUL- GREEN
-#define PulVccPin 8  //PUL+ YELLOW
+// Motor A Pins
+#define MOTOR_A_IN1_PIN  2
+#define MOTOR_A_IN2_PIN  3
+#define MOTOR_A_EN_PIN   5
+
+// Motor B Pins
+#define MOTOR_B_IN1_PIN  6
+#define MOTOR_B_IN2_PIN  7
+#define MOTOR_B_EN_PIN   8
 
 #define RCTriggerPin 9    //
 #define MarkButtonPin A0  // BROWN
@@ -50,7 +53,7 @@ static void checkHomeButton(void);
 static void checkMarkButton(void);
 static void checkSerialData(void);
 
-static void jogRunStepper(void);
+static void jogRunMotors(void);
 
 static void SetupSysTickTimer(void);
 static void OnTimerOverFlowEvent(uint8_t);
@@ -64,7 +67,9 @@ static void GASERA_PrintStatus(int);
 static int GASERA_ParseResponse(const char*);
 
 GyverOLED<SSH1106_128x64> oled;
-Stepper stepMotor(EnaVccPin, EnaGndPin, DirVccPin, DirGndPin, PulVccPin, PulGndPin);
+
+MotorDriver motorA(MOTOR_A_IN1_PIN, MOTOR_A_IN2_PIN, MOTOR_A_EN_PIN);
+MotorDriver motorB(MOTOR_B_IN1_PIN, MOTOR_B_IN2_PIN, MOTOR_B_EN_PIN);
 
 static uint8_t btnHomeState = BUTTON_NO_PRESS;
 static uint8_t btnMarkState = BUTTON_NO_PRESS;
@@ -116,7 +121,7 @@ void setup() {
 
 void loop() {
   SYS_TIMER_Main_Tasks();
-  jogRunStepper();
+  jogRunMotors();
   HandleAsyncEvents();
 }
 
@@ -281,50 +286,31 @@ static void MeasurementTask(uint8_t event, uint8_t idx) {
 }
 
 static void HandleUserInstruction(const char* inst) {
-  int32_t targetPosition, delta;
+  int32_t targetPosition;
 
   if (strlen(inst) < 3) {
     return;
   }
 
   if (strncmp(inst, "print", 5) == 0) {
-    log_printf("CurrPos:  %ld", stepMotor.getCurrentPosition());
+    log_printf("CurrPos: 0");
   } else if (strncmp(inst, "reset", 5) == 0) {
-    stepMotor.resetHomePosition();
     log_println("Reset Home CurrPos: 0");
   } else if (strncmp(inst, "mark", 4) == 0) {
-    stepMotor.markCurrentPosition();
-    log_printf("Mark Pos: %ld", stepMotor.getCurrentPosition());
+    log_printf("Mark Pos: 0");
   } else if (strncmp(inst, "gmark", 5) == 0) {
-    log_printf("Goto Mark Pos: %ld", stepMotor.getMarkPosition());
-    stepMotor.gotoMarkPosition();
-    log_printf("CurrPos:  %ld", stepMotor.getCurrentPosition());
+    log_printf("Goto Mark Position");
+    motorA.forward();
+    motorB.forward();
   } else if (strncmp(inst, "pmark", 5) == 0) {
-    log_printf("Mark Pos: %ld", stepMotor.getMarkPosition());
+    log_printf("Mark Pos: 0");
   } else if (strncmp(inst, "smark", 5) == 0) {
     targetPosition = atol(&inst[5]);
-    stepMotor.setMarkPosition(targetPosition);
-    log_printf("Mark Pos: %ld", stepMotor.getMarkPosition());
+    log_printf("Mark Pos: %ld", targetPosition);
   } else if (strncmp(inst, "ghome", 5) == 0) {
     log_println("Going Home");
-    stepMotor.gotoHomePosition();
-    log_println("CurrPos: 0");
-  } else if (strncmp(inst, "xon", 3) == 0) {
-    log_println("Step Drv. Enabled!");
-    stepMotor.setDriverEnable(true);
-  } else if (strncmp(inst, "xoff", 4) == 0) {
-    log_println("Step Drv. Disabled!");
-    stepMotor.setDriverEnable(false);
-  } else if (inst[0] == 'g') {  // goto targetPosition
-    targetPosition = atol(&inst[1]);
-    log_printf("Goto Pos: %ld", targetPosition);
-    stepMotor.gotoPosition(targetPosition);  // Blocking Function!
-    log_printf("CurrPos:  %ld", stepMotor.getCurrentPosition());
-  } else if (inst[0] == 'm') {  // move delta
-    delta = atol(&inst[1]);
-    log_printf("Move Steps %ld", delta);
-    stepMotor.move(delta);  // Blocking Function!
-    log_printf("CurrPos:  %ld", stepMotor.getCurrentPosition());
+    motorA.reverse();
+    motorB.reverse();
   } else {
     log_println("Unk Cmd!");
     // log_println("Try: print, home, mark, xon, xoff, m1000, m-1000, g2500, g-2500");
@@ -528,38 +514,16 @@ static void checkSerialData(void) {
   }
 }
 
-static void jogRunStepper(void) {
-  bool driverEnabled = stepMotor.isDriverEnabled();
-  int i;
+static void jogRunMotors(void) {
 
   if (digitalRead(UpButtonPin) == LOW) {
-    stepMotor.setDriverEnable(true);
+    motorA.forward(255);
+    motorB.forward(255);
     log_println("Jog Run UP");
-    stepMotor.setDirection(true);
-    i = 0;
-    stepMotor.setMotorSpeed(STEPPER_DEFAULT_SPEED);
-    while (digitalRead(UpButtonPin) == LOW) {
-      stepMotor.step();
-      if (++i == 1000) {
-        stepMotor.setMotorSpeed(STEPPER_FAST_SPEED);
-      }
-    }
-    stepMotor.setDriverEnable(driverEnabled);
-    HandleUserInstruction("print");
   } else if (digitalRead(DownButtonPin) == LOW) {
-    stepMotor.setDriverEnable(true);
+    motorA.reverse(255);
+    motorB.reverse(255);
     log_println("Jog Run DN");
-    stepMotor.setDirection(false);
-    i = 0;
-    stepMotor.setMotorSpeed(STEPPER_DEFAULT_SPEED);
-    while (digitalRead(DownButtonPin) == LOW) {
-      stepMotor.step();
-      if (++i == 1000) {
-        stepMotor.setMotorSpeed(STEPPER_FAST_SPEED);
-      }
-    }
-    stepMotor.setDriverEnable(driverEnabled);
-    HandleUserInstruction("print");
   }
 }
 
