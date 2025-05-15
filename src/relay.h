@@ -3,6 +3,11 @@
 
 #include <Arduino.h>
 
+enum MotorDirection {
+  MOTOR_UP,
+  MOTOR_DOWN
+};
+
 class RelayMotorDriver {
   private:
     uint8_t forwardPin;

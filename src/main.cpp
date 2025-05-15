@@ -420,6 +420,22 @@ static int GASERA_ParseResponse(const char* response) {
   return device_status;
 }
 
+static void handleMotorAction(RelayMotorDriver& motor, MotorDirection direction) {
+  const char* motorName = (&motor == &motorA) ? "MotorA" : "MotorB";
+  if (motor.isStopped()) {
+    if (direction == MOTOR_UP) {
+      motor.forward();
+      log_printf("Jog Run %s UP\n", motorName);
+    } else {
+      motor.reverse();
+      log_printf("Jog Run %s Down\n", motorName);
+    }
+  } else {
+    motor.stop();
+    log_printf("%s Stop\n", motorName);
+  }
+}
+
 static void HandleAsyncEvents(void) {
   if (btnHomeState == BUTTON_LONG_PRESS) {
     // HandleUserInstruction("reset");
@@ -428,40 +444,16 @@ static void HandleAsyncEvents(void) {
     // HandleUserInstruction("gmark");
     btnMarkState = BUTTON_NO_PRESS;
   } else if (btnHomeState == BUTTON_SHORT_PRESS) {
-    if (motorA.isStopped()) {
-      motorA.forward();
-      log_println("Jog Run MotorA UP");
-    } else {
-      motorA.stop();
-      log_println("MotorA Stop");
-    }
+    handleMotorAction(motorA, MOTOR_UP);
     btnHomeState = BUTTON_NO_PRESS;
   } else if (btnMarkState == BUTTON_SHORT_PRESS) {
-    if (motorA.isStopped()) {
-      motorA.reverse();
-      log_println("Jog Run MotorA Down");
-    } else {
-      motorA.stop();
-      log_println("MotorA Stop");
-    }
+    handleMotorAction(motorA, MOTOR_DOWN);
     btnMarkState = BUTTON_NO_PRESS;
   } else if (btnUpState == BUTTON_SHORT_PRESS) {
-    if (motorB.isStopped()) {
-      motorB.forward();
-      log_println("Jog Run MotorB UP");
-    } else {
-      motorB.stop();
-      log_println("MotorB Stop");
-    }
+    handleMotorAction(motorB, MOTOR_UP);
     btnUpState = BUTTON_NO_PRESS;
   } else if (btnDownState == BUTTON_SHORT_PRESS) {
-    if (motorB.isStopped()) {
-      motorB.reverse();
-      log_println("Jog Run MotorB Down");
-    } else {
-      motorB.stop();
-      log_println("MotorB Stop");
-    }
+    handleMotorAction(motorB, MOTOR_DOWN);
     btnDownState = BUTTON_NO_PRESS;
   } else if (SerialPortState == SERIAL_DATA_RECEIVED) {
     HandleUserInstruction(serialBuffer);
