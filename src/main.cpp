@@ -8,7 +8,7 @@
  *
  */
 
- #include "brush.h"
+ #include "relay.h"
 #include "gasera.h"
 #include "sys_config.h"
 #include "sys_timer.h"
@@ -16,15 +16,12 @@
 #include <WiFiEspAT.h>
 #include <GyverOLED.h>
 
-// Motor A Pins
-#define MOTOR_A_IN1_PIN  2
-#define MOTOR_A_IN2_PIN  3
-#define MOTOR_A_EN_PIN   5
+#define MOTOR_A_FORWARD_PIN  2
+#define MOTOR_A_REVERSE_PIN  3
 
-// Motor B Pins
-#define MOTOR_B_IN1_PIN  6
-#define MOTOR_B_IN2_PIN  7
-#define MOTOR_B_EN_PIN   8
+// Motor B Relay Pins
+#define MOTOR_B_FORWARD_PIN  4
+#define MOTOR_B_REVERSE_PIN  5
 
 #define RCTriggerPin 9    //
 #define MarkButtonPin A0  // BROWN
@@ -68,8 +65,9 @@ static int GASERA_ParseResponse(const char*);
 
 GyverOLED<SSH1106_128x64> oled;
 
-MotorDriver motorA(MOTOR_A_IN1_PIN, MOTOR_A_IN2_PIN, MOTOR_A_EN_PIN);
-MotorDriver motorB(MOTOR_B_IN1_PIN, MOTOR_B_IN2_PIN, MOTOR_B_EN_PIN);
+// Motor A and B Instances
+RelayMotorDriver motorA(MOTOR_A_FORWARD_PIN, MOTOR_A_REVERSE_PIN);
+RelayMotorDriver motorB(MOTOR_B_FORWARD_PIN, MOTOR_B_REVERSE_PIN);
 
 static uint8_t btnHomeState = BUTTON_NO_PRESS;
 static uint8_t btnMarkState = BUTTON_NO_PRESS;
@@ -406,16 +404,16 @@ static int GASERA_ParseResponse(const char* response) {
 
 static void HandleAsyncEvents(void) {
   if (btnHomeState == BUTTON_LONG_PRESS) {
-    HandleUserInstruction("reset");
+    // HandleUserInstruction("reset");
     btnHomeState = BUTTON_NO_PRESS;
   } else if (btnHomeState == BUTTON_SHORT_PRESS) {
-    HandleUserInstruction("ghome");
+    // HandleUserInstruction("ghome");
     btnHomeState = BUTTON_NO_PRESS;
   } else if (btnMarkState == BUTTON_LONG_PRESS) {
-    HandleUserInstruction("mark");
+    // HandleUserInstruction("mark");
     btnMarkState = BUTTON_NO_PRESS;
   } else if (btnMarkState == BUTTON_SHORT_PRESS) {
-    HandleUserInstruction("gmark");
+    // HandleUserInstruction("gmark");
     btnMarkState = BUTTON_NO_PRESS;
   } else if (SerialPortState == SERIAL_DATA_RECEIVED) {
     HandleUserInstruction(serialBuffer);
@@ -515,15 +513,21 @@ static void checkSerialData(void) {
 }
 
 static void jogRunMotors(void) {
-
   if (digitalRead(UpButtonPin) == LOW) {
-    motorA.forward(255);
-    motorB.forward(255);
-    log_println("Jog Run UP");
+    motorA.forward();
+    log_println("Jog Run MotorA UP");
   } else if (digitalRead(DownButtonPin) == LOW) {
-    motorA.reverse(255);
-    motorB.reverse(255);
-    log_println("Jog Run DN");
+    motorA.reverse();
+    log_println("Jog Run MotorA DN");
+  } else if (digitalRead(HomeButtonPin) == LOW) {
+    motorB.forward();
+    log_println("Jog Run MotorB UP");
+  } else if (digitalRead(MarkButtonPin) == LOW) {
+    motorB.reverse();
+    log_println("Jog Run MotorB DN");
+  } else {
+    motorA.stop();
+    motorB.stop();
   }
 }
 
