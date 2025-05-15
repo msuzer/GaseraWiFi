@@ -14,6 +14,10 @@ class RelayMotorDriver {
     void forward();
     void reverse();
     void stop();
+
+    bool isForward() const;
+    bool isReverse() const;
+    bool isStopped() const;
 };
 
 #endif // RELAY_MOTOR_DRIVER_H

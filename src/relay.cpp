@@ -23,3 +23,15 @@ void RelayMotorDriver::stop() {
   digitalWrite(forwardPin, HIGH);  // Both OFF
   digitalWrite(reversePin, HIGH);
 }
+
+bool RelayMotorDriver::isForward() const {
+  return digitalRead(forwardPin) == LOW && digitalRead(reversePin) == HIGH;
+}
+
+bool RelayMotorDriver::isReverse() const {
+  return digitalRead(forwardPin) == HIGH && digitalRead(reversePin) == LOW;
+}
+
+bool RelayMotorDriver::isStopped() const {
+  return digitalRead(forwardPin) == HIGH && digitalRead(reversePin) == HIGH;
+}

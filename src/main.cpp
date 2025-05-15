@@ -48,6 +48,8 @@
 #define TIMER_OVF_OCCURRED 0x20
 
 static void checkRCTrigger(void);
+static void checkUpButton(void);
+static void checkDownButton(void);
 static void checkHomeButton(void);
 static void checkMarkButton(void);
 static void checkSerialData(void);
@@ -71,6 +73,8 @@ GyverOLED<SSH1106_128x64> oled;
 RelayMotorDriver motorA(MOTOR_A_FORWARD_PIN, MOTOR_A_REVERSE_PIN);
 RelayMotorDriver motorB(MOTOR_B_FORWARD_PIN, MOTOR_B_REVERSE_PIN);
 
+static uint8_t btnUpState = BUTTON_NO_PRESS;
+static uint8_t btnDownState = BUTTON_NO_PRESS;
 static uint8_t btnHomeState = BUTTON_NO_PRESS;
 static uint8_t btnMarkState = BUTTON_NO_PRESS;
 static uint8_t RCTaskState = RC_TASK_IDLE;
@@ -124,7 +128,7 @@ void setup() {
 
 void loop() {
   SYS_TIMER_Main_Tasks();
-  jogRunMotors();
+  // jogRunMotors();
   HandleAsyncEvents();
 }
 
@@ -132,6 +136,8 @@ ISR(TIMER1_COMPA_vect) {  // timer1 compare interrupt service routine
   SYS_TIMER_Periodic_Tasks();
   checkSerialData();
   checkRCTrigger();
+  checkUpButton();
+  checkDownButton();
   checkHomeButton();
   checkMarkButton();
 }
@@ -418,15 +424,45 @@ static void HandleAsyncEvents(void) {
   if (btnHomeState == BUTTON_LONG_PRESS) {
     // HandleUserInstruction("reset");
     btnHomeState = BUTTON_NO_PRESS;
-  } else if (btnHomeState == BUTTON_SHORT_PRESS) {
-    // HandleUserInstruction("ghome");
-    btnHomeState = BUTTON_NO_PRESS;
   } else if (btnMarkState == BUTTON_LONG_PRESS) {
-    // HandleUserInstruction("mark");
-    btnMarkState = BUTTON_NO_PRESS;
-  } else if (btnMarkState == BUTTON_SHORT_PRESS) {
     // HandleUserInstruction("gmark");
     btnMarkState = BUTTON_NO_PRESS;
+  } else if (btnHomeState == BUTTON_SHORT_PRESS) {
+    if (motorA.isStopped()) {
+      motorA.forward();
+      log_println("Jog Run MotorA UP");
+    } else {
+      motorA.stop();
+      log_println("MotorA Stop");
+    }
+    btnHomeState = BUTTON_NO_PRESS;
+  } else if (btnMarkState == BUTTON_SHORT_PRESS) {
+    if (motorA.isStopped()) {
+      motorA.reverse();
+      log_println("Jog Run MotorA Down");
+    } else {
+      motorA.stop();
+      log_println("MotorA Stop");
+    }
+    btnMarkState = BUTTON_NO_PRESS;
+  } else if (btnUpState == BUTTON_SHORT_PRESS) {
+    if (motorB.isStopped()) {
+      motorB.forward();
+      log_println("Jog Run MotorB UP");
+    } else {
+      motorB.stop();
+      log_println("MotorB Stop");
+    }
+    btnUpState = BUTTON_NO_PRESS;
+  } else if (btnDownState == BUTTON_SHORT_PRESS) {
+    if (motorB.isStopped()) {
+      motorB.reverse();
+      log_println("Jog Run MotorB Down");
+    } else {
+      motorB.stop();
+      log_println("MotorB Stop");
+    }
+    btnDownState = BUTTON_NO_PRESS;
   } else if (SerialPortState == SERIAL_DATA_RECEIVED) {
     HandleUserInstruction(serialBuffer);
     SerialPortState = SERIAL_PORT_IDLE;
@@ -454,6 +490,54 @@ static void checkRCTrigger(void) {
         RCTaskState = RC_TASK_ABORTED;
       }
     }
+  }
+}
+
+static void checkUpButton(void) {
+  static bool pinStateOld = HIGH;
+  static int counter = 0;
+  bool pinState;
+
+  pinState = digitalRead(UpButtonPin);
+
+  if (pinState == LOW) {
+    if (pinStateOld != pinState) {
+      if (++counter >= MS_To_Ticks(2000)) {
+        btnUpState = BUTTON_LONG_PRESS;
+        pinStateOld = pinState;
+        counter = 0;
+      }
+    }
+  } else {
+    if (counter >= MS_To_Ticks(100)) {
+      btnUpState = BUTTON_SHORT_PRESS;
+    }
+    counter = 0;
+    pinStateOld = pinState;
+  }
+}
+
+static void checkDownButton(void) {
+  static bool pinStateOld = HIGH;
+  static int counter = 0;
+  bool pinState;
+
+  pinState = digitalRead(DownButtonPin);
+
+  if (pinState == LOW) {
+    if (pinStateOld != pinState) {
+      if (++counter >= MS_To_Ticks(2000)) {
+        btnDownState = BUTTON_LONG_PRESS;
+        pinStateOld = pinState;
+        counter = 0;
+      }
+    }
+  } else {
+    if (counter >= MS_To_Ticks(100)) {
+      btnDownState = BUTTON_SHORT_PRESS;
+    }
+    counter = 0;
+    pinStateOld = pinState;
   }
 }
 
