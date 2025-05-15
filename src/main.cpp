@@ -16,6 +16,8 @@
 #include <WiFiEspAT.h>
 #include <GyverOLED.h>
 
+#define MOTOR_FULL_MOVEMENT_TIME_SEC 60
+
 #define MOTOR_A_FORWARD_PIN  2
 #define MOTOR_A_REVERSE_PIN  3
 
@@ -93,6 +95,9 @@ void setup() {
 
   //pinMode(LimitSwitch1Pin, INPUT_PULLUP);  // set pull-up
   //pinMode(LimitSwitch2Pin, INPUT_PULLUP);  // set pull-up
+
+  motorA.begin();
+  motorB.begin();
 
   oled.init();
   oled.autoPrintln(true);
@@ -225,14 +230,14 @@ static void MeasurementTask(uint8_t event, uint8_t idx) {
     case 2:
       if (timer_event) {
         HandleUserInstruction("gmark");
-        SYS_TIMER_SetupTimer(SYS_TMR0, MS_To_Ticks(1000));
-        log_println("Start New Measuremnt");
+        SYS_TIMER_SetupTimer(SYS_TMR0, SEC_To_Ticks(MOTOR_FULL_MOVEMENT_TIME_SEC));
         state = 3;
       }
       break;
     case 3:
       if (timer_event) {
         SYS_TIMER_SetupTimer(SYS_TMR0, MS_To_Ticks(2000));
+        log_println("Start New Measuremnt");
         if (startNewMeasurement(gaseraRxBuffer)) {
           dev_status = GASERA_ParseResponse(gaseraRxBuffer);
           if (dev_status == device_idle_state) {
@@ -269,13 +274,20 @@ static void MeasurementTask(uint8_t event, uint8_t idx) {
           dev_status = GASERA_ParseResponse(gaseraRxBuffer);
           if (dev_status == device_idle_state) {
             HandleUserInstruction("ghome");
-            RCTaskState = RC_TASK_IDLE;
-            state = 0;
+            SYS_TIMER_SetupTimer(SYS_TMR0, SEC_To_Ticks(MOTOR_FULL_MOVEMENT_TIME_SEC));
+            state = 6;
+            return;
           } else {
             GASERA_PrintStatus(dev_status);
           }
         }
         SYS_TIMER_SetupTimer(SYS_TMR0, MS_To_Ticks(2000));
+      }
+      break;
+    case 6:
+      if (timer_event) {
+        RCTaskState = RC_TASK_IDLE;
+        state = 0;   
       }
       break;
     default:
