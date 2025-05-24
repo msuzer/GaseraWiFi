@@ -8,31 +8,31 @@
  *
  */
 
- #include "relay.h"
-#include "gasera.h"
+#include <Arduino.h>
+#include <stdarg.h>
+#include <GyverOLED.h>
+#include <WiFi.h>  // Replace with your WiFi library
+#include <WiFiClient.h>
+#include "relay.h"
 #include "sys_config.h"
 #include "sys_timer.h"
-#include <stdarg.h>
-#include <WiFiEspAT.h>
-#include <GyverOLED.h>
+#include "GaseraController.h"
 
 #define MOTOR_FULL_MOVEMENT_TIME_SEC 60
 
-#define MOTOR_A_FORWARD_PIN  2
-#define MOTOR_A_REVERSE_PIN  3
+#define MOTOR_A_FORWARD_PIN  32
+#define MOTOR_A_REVERSE_PIN  33
 
 // Motor B Relay Pins
-#define MOTOR_B_FORWARD_PIN  4
-#define MOTOR_B_REVERSE_PIN  5
+#define MOTOR_B_FORWARD_PIN  25
+#define MOTOR_B_REVERSE_PIN  26
 
-#define RCTriggerPin 9    //
-#define MarkButtonPin A0  // BROWN
-#define DownButtonPin A1  // ORANGE
-#define UpButtonPin A2    // RED
-#define HomeButtonPin A3  // YELLOW
+#define RCTriggerPin 27    //
 
-#define LimitSwitch1Pin A4  // Conflicts I2C SDA!
-#define LimitSwitch2Pin A5  // Conflicts I2C SCL!
+#define MarkButtonPin 36  // BROWN
+#define DownButtonPin 39  // ORANGE
+#define UpButtonPin 34    // RED
+#define HomeButtonPin 35  // YELLOW
 
 #define BUTTON_NO_PRESS 0x00
 #define BUTTON_SHORT_PRESS 0x01
@@ -48,13 +48,7 @@
 #define TIMER_OVF_OCCURRED 0x20
 
 static void checkRCTrigger(void);
-static void checkUpButton(void);
-static void checkDownButton(void);
-static void checkHomeButton(void);
-static void checkMarkButton(void);
 static void checkSerialData(void);
-
-static void jogRunMotors(void);
 
 static void SetupSysTickTimer(void);
 static void OnTimerOverFlowEvent(uint8_t);
@@ -64,10 +58,8 @@ static void HandleUserInstruction(const char*);
 static void ConnectionTask(uint8_t event, uint8_t idx);
 static void MeasurementTask(uint8_t event, uint8_t idx);
 
-static void GASERA_PrintStatus(int);
-static int GASERA_ParseResponse(const char*);
-
 GyverOLED<SSH1106_128x64> oled;
+WiFiClient wifiClient;
 
 // Motor A and B Instances
 RelayMotorDriver motorA(MOTOR_A_FORWARD_PIN, MOTOR_A_REVERSE_PIN);
@@ -79,6 +71,13 @@ static uint8_t btnHomeState = BUTTON_NO_PRESS;
 static uint8_t btnMarkState = BUTTON_NO_PRESS;
 static uint8_t RCTaskState = RC_TASK_IDLE;
 static uint8_t SerialPortState = SERIAL_PORT_IDLE;
+
+// Button IDs
+enum ButtonId { BTN_UP = 0, BTN_DOWN, BTN_HOME, BTN_MARK, BTN_COUNT };
+const uint8_t buttonPins[BTN_COUNT] = {UpButtonPin, DownButtonPin, HomeButtonPin, MarkButtonPin};
+volatile uint8_t* buttonStates[BTN_COUNT] = {&btnUpState, &btnDownState, &btnHomeState, &btnMarkState};
+
+void checkButton(ButtonId id);
 
 static bool GASERAReady = false;
 
@@ -97,9 +96,6 @@ void setup() {
   pinMode(HomeButtonPin, INPUT_PULLUP);
   pinMode(MarkButtonPin, INPUT_PULLUP);
 
-  //pinMode(LimitSwitch1Pin, INPUT_PULLUP);  // set pull-up
-  //pinMode(LimitSwitch2Pin, INPUT_PULLUP);  // set pull-up
-
   motorA.begin();
   motorB.begin();
 
@@ -114,32 +110,24 @@ void setup() {
   log_println("GASERA Remote Control Project");
   HandleUserInstruction("print");
 
-  Serial3.begin(115200);
-  WiFi.init(Serial3);
-
-  if (WiFi.status() != WL_NO_MODULE) {
-    WiFi.begin(NAME_OF_SSID, PASSWORD_OF_SSID);
-    log_println("WiFi module OK!");
-    SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(1000));  // Set Timer to Fire ConnectionTask()
-  } else {
-    log_println("No WiFi Module!");
-  }
+  WiFi.begin(NAME_OF_SSID, PASSWORD_OF_SSID);
+  log_println("Connecting to WiFi...");
+  SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(1000));  // Set Timer to Fire ConnectionTask()
 }
 
 void loop() {
   SYS_TIMER_Main_Tasks();
-  // jogRunMotors();
   HandleAsyncEvents();
 }
 
-ISR(TIMER1_COMPA_vect) {  // timer1 compare interrupt service routine
+void IRAM_ATTR onSysTick() {
   SYS_TIMER_Periodic_Tasks();
   checkSerialData();
   checkRCTrigger();
-  checkUpButton();
-  checkDownButton();
-  checkHomeButton();
-  checkMarkButton();
+  checkButton(BTN_UP);
+  checkButton(BTN_DOWN);
+  checkButton(BTN_HOME);
+  checkButton(BTN_MARK);
 }
 
 static void OnTimerOverFlowEvent(uint8_t idx) {
@@ -156,45 +144,51 @@ static void ConnectionTask(uint8_t event, uint8_t idx) {
     return;
   }
 
+  auto& gasera = GaseraController::getInstance();
+
   switch (state) {
     case 0:
       if (WiFi.status() == WL_CONNECTED) {
-        StringPrinter(buf).print(WiFi.localIP());
-        log_printf("IP: %s", buf);
+        IPAddress ip = WiFi.localIP();
+        log_printf_alt("IP: %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
         state = 1;
       }
       SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(2000));
       break;
+
     case 1:
       log_println("Connecting to GASERA");
       SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(2000));
       state = 2;
       break;
+
     case 2:
-      if (getDeviceStatus(gaseraRxBuffer)) {
-        dev_status = GASERA_ParseResponse(gaseraRxBuffer);
-        GASERA_PrintStatus(dev_status);
-        if (dev_status == device_idle_state) {
+      if (gasera.getDeviceStatus(wifiClient, gaseraRxBuffer)) {
+        dev_status = gasera.parseResponse(gaseraRxBuffer);
+        gasera.printStatus(dev_status);
+        if (dev_status == GaseraController::DeviceIdle) {
           state = 3;
-        } else if (dev_status == measurement_in_progress) {
-          stopCurrentMeasurement(gaseraRxBuffer);
+        } else if (dev_status == GaseraController::Measuring) {
+          gasera.stopCurrentMeasurement(wifiClient, gaseraRxBuffer);
         }
       }
       SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(2000));
       break;
+
     case 3:
-      if (setOnlineMeasurementMode(gaseraRxBuffer)) {
-        dev_status = GASERA_ParseResponse(gaseraRxBuffer);
-        if (dev_status == device_idle_state) {
+      if (gasera.setOnlineMeasurementMode(wifiClient, gaseraRxBuffer)) {
+        dev_status = gasera.parseResponse(gaseraRxBuffer);
+        if (dev_status == GaseraController::DeviceIdle) {
           log_println("GASERA Ready!");
           GASERAReady = true;
           state = -1;
         } else {
-          GASERA_PrintStatus(dev_status);
+          gasera.printStatus(dev_status);
         }
       }
       SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(2000));
       break;
+
     default:
       break;
   }
@@ -207,11 +201,13 @@ static void MeasurementTask(uint8_t event, uint8_t idx) {
 
   bool timer_event = (event == TIMER_OVF_OCCURRED && idx == SYS_TMR0);
 
+  auto& gasera = GaseraController::getInstance();
+
   switch (state) {
     case 0:
       if (event == RC_TASK_TRIGGERED) {
         if (GASERAReady) {
-          log_println("New Task  Triggered!");
+          log_println("New Task Triggered!");
           SYS_TIMER_SetupTimer(SYS_TMR0, MS_To_Ticks(100));
           state = 1;
         } else {
@@ -220,19 +216,21 @@ static void MeasurementTask(uint8_t event, uint8_t idx) {
         }
       }
       break;
+
     case 1:
       if (timer_event) {
-        if (getDeviceStatus(gaseraRxBuffer)) {
-          dev_status = GASERA_ParseResponse(gaseraRxBuffer);
-          if (dev_status == device_idle_state) {
+        if (gasera.getDeviceStatus(wifiClient, gaseraRxBuffer)) {
+          dev_status = gasera.parseResponse(gaseraRxBuffer);
+          if (dev_status == GaseraController::DeviceIdle) {
             state = 2;
           } else {
-            GASERA_PrintStatus(dev_status);
+            gasera.printStatus(dev_status);
           }
         }
         SYS_TIMER_SetupTimer(SYS_TMR0, MS_To_Ticks(1000));
       }
       break;
+
     case 2:
       if (timer_event) {
         HandleUserInstruction("gmark");
@@ -240,22 +238,24 @@ static void MeasurementTask(uint8_t event, uint8_t idx) {
         state = 3;
       }
       break;
+
     case 3:
       if (timer_event) {
         SYS_TIMER_SetupTimer(SYS_TMR0, MS_To_Ticks(2000));
-        log_println("Start New Measuremnt");
-        if (startNewMeasurement(gaseraRxBuffer)) {
-          dev_status = GASERA_ParseResponse(gaseraRxBuffer);
-          if (dev_status == device_idle_state) {
+        log_println("Start New Measurement");
+        if (gasera.startNewMeasurement(wifiClient, gaseraRxBuffer)) {
+          dev_status = gasera.parseResponse(gaseraRxBuffer);
+          if (dev_status == GaseraController::DeviceIdle) {
             wait = GASERA_MEASUREMENT_TIME;
             RCTaskState = RC_TASK_IDLE;
             state = 4;
           } else {
-            GASERA_PrintStatus(dev_status);
+            gasera.printStatus(dev_status);
           }
         }
       }
       break;
+
     case 4:
       if (event == RC_TASK_ABORTED) {
         RCTaskState = RC_TASK_IDLE;
@@ -264,9 +264,9 @@ static void MeasurementTask(uint8_t event, uint8_t idx) {
         state = 5;
       } else if (timer_event) {
         if (wait > 0) {
-          log_printf("Awaiting: %03d Secs.", wait);
+          log_printf_alt("Awaiting: %03d Secs.", wait);
           wait -= 10;
-          SYS_TIMER_SetupTimer(SYS_TMR0, SEC_To_Ticks(10));  // Wait 5 mins
+          SYS_TIMER_SetupTimer(SYS_TMR0, SEC_To_Ticks(10));  // Wait 10 secs
         } else {
           log_println("Stop Measurement!");
           SYS_TIMER_SetupTimer(SYS_TMR0, MS_To_Ticks(1000));
@@ -274,28 +274,31 @@ static void MeasurementTask(uint8_t event, uint8_t idx) {
         }
       }
       break;
+
     case 5:
       if (timer_event) {
-        if (stopCurrentMeasurement(gaseraRxBuffer)) {
-          dev_status = GASERA_ParseResponse(gaseraRxBuffer);
-          if (dev_status == device_idle_state) {
+        if (gasera.stopCurrentMeasurement(wifiClient, gaseraRxBuffer)) {
+          dev_status = gasera.parseResponse(gaseraRxBuffer);
+          if (dev_status == GaseraController::DeviceIdle) {
             HandleUserInstruction("ghome");
             SYS_TIMER_SetupTimer(SYS_TMR0, SEC_To_Ticks(MOTOR_FULL_MOVEMENT_TIME_SEC));
             state = 6;
             return;
           } else {
-            GASERA_PrintStatus(dev_status);
+            gasera.printStatus(dev_status);
           }
         }
         SYS_TIMER_SetupTimer(SYS_TMR0, MS_To_Ticks(2000));
       }
       break;
+
     case 6:
       if (timer_event) {
         RCTaskState = RC_TASK_IDLE;
         state = 0;   
       }
       break;
+
     default:
       break;
   }
@@ -309,20 +312,20 @@ static void HandleUserInstruction(const char* inst) {
   }
 
   if (strncmp(inst, "print", 5) == 0) {
-    log_printf("CurrPos: 0");
+    log_printf_alt("CurrPos: 0");
   } else if (strncmp(inst, "reset", 5) == 0) {
     log_println("Reset Home CurrPos: 0");
   } else if (strncmp(inst, "mark", 4) == 0) {
-    log_printf("Mark Pos: 0");
+    log_printf_alt("Mark Pos: 0");
   } else if (strncmp(inst, "gmark", 5) == 0) {
-    log_printf("Goto Mark Position");
+    log_printf_alt("Goto Mark Position");
     motorA.forward();
     motorB.forward();
   } else if (strncmp(inst, "pmark", 5) == 0) {
-    log_printf("Mark Pos: 0");
+    log_printf_alt("Mark Pos: 0");
   } else if (strncmp(inst, "smark", 5) == 0) {
     targetPosition = atol(&inst[5]);
-    log_printf("Mark Pos: %ld", targetPosition);
+    log_printf_alt("Mark Pos: %ld", targetPosition);
   } else if (strncmp(inst, "ghome", 5) == 0) {
     log_println("Going Home");
     motorA.reverse();
@@ -333,106 +336,19 @@ static void HandleUserInstruction(const char* inst) {
   }
 }
 
-static void GASERA_PrintStatus(int status) {
-  switch (status) {
-    case device_initializing:
-      log_println(str_device_initializing);
-      break;
-    case initialization_error:
-      log_println(str_initialization_error);
-      break;
-    case device_idle_state:
-      log_println(str_device_idle_state);
-      break;
-    case device_self_test_in_progress:
-      log_println(str_device_self_test_in_progress);
-      break;
-    case malfunction:
-      log_println(str_malfunction);
-      break;
-    case measurement_in_progress:
-      log_println(str_measurement_in_progress);
-      break;
-    case calibration_in_progress:
-      log_println(str_calibration_in_progress);
-      break;
-    case canceling_measurement:
-      log_println(str_canceling_measurement);
-      break;
-    case laserscan_in_progress:
-      log_println(str_laserscan_in_progress);
-      break;
-    default:
-      log_printf(str_device_error, status);  // Report Error
-      break;
-  }
-}
-
-static int GASERA_ParseResponse(const char* response) {
-  int error = no_error;
-  int device_status = device_idle_state;
-
-  // Trim leading space!
-  for (int i = 0; i < 64; i++) {
-    if (*response == ' ') {
-      response++;
-    } else {
-      break;
-    }
-  }
-
-  if (strlen(response) < 6) {
-    return -1;
-  }
-
-  if (strncmp(response, str_get_device_status, 4) == 0) {
-    // response ASTS <errorstatus> <device_status> (errorstatus: 0=no errors, 1=error)
-    error = response[5] & 1;
-    if (error == 0) {
-      device_status = response[7] & 0x0F;
-    }
-  } else if (strncmp(response, str_start_new_measurement, 4) == 0) {
-    // response STAM <errorstatus> (0=no errors, 1=error)
-    error = response[5] & 1;
-    if (error == 0) {
-      log_println("Measurement Started!");
-    }
-  } else if (strncmp(response, str_stop_current_measurement, 4) == 0) {
-    // response STPM <errorstatus> (0=no errors, 1=error)
-    error = response[5] & 1;
-    if (error == 0) {
-      log_println("Measurement Stop!");
-    }
-  } else if (strncmp(response, str_set_online_measurement_mode, 4) == 0) {
-    // response SONL <errorstatus> (0=no errors, 1=error)
-    error = response[5] & 1;
-    if (error == 0) {
-      log_println("Local Save Enabled!");
-    }
-  } else {
-    return -1;
-  }
-
-  if (error != no_error) {
-    return -1;
-  }
-
-  return device_status;
-}
-
 static void handleMotorAction(RelayMotorDriver& motor, MotorDirection direction) {
   const char* motorName = (&motor == &motorA) ? "MotorA" : "MotorB";
   if (motor.isStopped()) {
     if (direction == MOTOR_UP) {
       motor.forward();
-      log_printf("Jog Run %s UP\n", motorName);
+      log_printf_alt("Jog Run %s UP\n", motorName);
     } else {
       motor.reverse();
-      log_printf("Jog Run %s Down\n", motorName);
+      log_printf_alt("Jog Run %s Down\n", motorName);
     }
   } else {
     motor.stop();
-    log_printf("%s Stop\n", motorName);
+    log_printf_alt("%s Stop\n", motorName);
   }
 }
 
@@ -485,98 +401,26 @@ static void checkRCTrigger(void) {
   }
 }
 
-static void checkUpButton(void) {
-  static bool pinStateOld = HIGH;
-  static int counter = 0;
-  bool pinState;
+void checkButton(ButtonId id) {
+  static bool buttonPinStatesOld[BTN_COUNT] = {HIGH, HIGH, HIGH, HIGH};
+  static int buttonCounters[BTN_COUNT] = {0, 0, 0, 0};
 
-  pinState = digitalRead(UpButtonPin);
+  bool pinState = digitalRead(buttonPins[id]);
 
   if (pinState == LOW) {
-    if (pinStateOld != pinState) {
-      if (++counter >= MS_To_Ticks(2000)) {
-        btnUpState = BUTTON_LONG_PRESS;
-        pinStateOld = pinState;
-        counter = 0;
+    if (buttonPinStatesOld[id] != pinState) {
+      if (++buttonCounters[id] >= MS_To_Ticks(2000)) {
+        *buttonStates[id] = BUTTON_LONG_PRESS;
+        buttonPinStatesOld[id] = pinState;
+        buttonCounters[id] = 0;
       }
     }
   } else {
-    if (counter >= MS_To_Ticks(100)) {
-      btnUpState = BUTTON_SHORT_PRESS;
+    if (buttonCounters[id] >= MS_To_Ticks(100)) {
+      *buttonStates[id] = BUTTON_SHORT_PRESS;
     }
-    counter = 0;
-    pinStateOld = pinState;
-  }
-}
-
-static void checkDownButton(void) {
-  static bool pinStateOld = HIGH;
-  static int counter = 0;
-  bool pinState;
-
-  pinState = digitalRead(DownButtonPin);
-
-  if (pinState == LOW) {
-    if (pinStateOld != pinState) {
-      if (++counter >= MS_To_Ticks(2000)) {
-        btnDownState = BUTTON_LONG_PRESS;
-        pinStateOld = pinState;
-        counter = 0;
-      }
-    }
-  } else {
-    if (counter >= MS_To_Ticks(100)) {
-      btnDownState = BUTTON_SHORT_PRESS;
-    }
-    counter = 0;
-    pinStateOld = pinState;
-  }
-}
-
-static void checkHomeButton(void) {
-  static bool pinStateOld = HIGH;
-  static int counter = 0;
-  bool pinState;
-
-  pinState = digitalRead(HomeButtonPin);
-
-  if (pinState == LOW) {
-    if (pinStateOld != pinState) {
-      if (++counter >= MS_To_Ticks(2000)) {
-        btnHomeState = BUTTON_LONG_PRESS;
-        pinStateOld = pinState;
-        counter = 0;
-      }
-    }
-  } else {
-    if (counter >= MS_To_Ticks(100)) {
-      btnHomeState = BUTTON_SHORT_PRESS;
-    }
-    counter = 0;
-    pinStateOld = pinState;
-  }
-}
-
-static void checkMarkButton(void) {
-  static bool pinStateOld = HIGH;
-  static int counter = 0;
-  bool pinState;
-
-  pinState = digitalRead(MarkButtonPin);
-  if (pinState == LOW) {
-    if (pinStateOld != pinState) {
-      if (++counter >= MS_To_Ticks(2000)) {
-        btnMarkState = BUTTON_LONG_PRESS;
-        pinStateOld = pinState;
-        counter = 0;
-      }
-    }
-  } else {
-    if (counter >= MS_To_Ticks(100)) {
-      btnMarkState = BUTTON_SHORT_PRESS;
-    }
-    counter = 0;
-    pinStateOld = pinState;
+    buttonCounters[id] = 0;
+    buttonPinStatesOld[id] = pinState;
   }
 }
 
@@ -600,25 +444,6 @@ static void checkSerialData(void) {
   }
 }
 
-static void jogRunMotors(void) {
-  if (digitalRead(UpButtonPin) == LOW) {
-    motorA.forward();
-    log_println("Jog Run MotorA UP");
-  } else if (digitalRead(DownButtonPin) == LOW) {
-    motorA.reverse();
-    log_println("Jog Run MotorA DN");
-  } else if (digitalRead(HomeButtonPin) == LOW) {
-    motorB.forward();
-    log_println("Jog Run MotorB UP");
-  } else if (digitalRead(MarkButtonPin) == LOW) {
-    motorB.reverse();
-    log_println("Jog Run MotorB DN");
-  } else {
-    motorA.stop();
-    motorB.stop();
-  }
-}
-
 void oledPrintln(const char* str) {
   oled.clear();
   oled.home();
@@ -631,7 +456,7 @@ void log_println(const char* message) {
   oledPrintln(message);
 }
 
-void log_printf(const char* format, ...) {
+void log_printf_alt(const char* format, ...) {
   static char txBuffer[64];
   va_list args;
   va_start(args, format);
@@ -640,30 +465,16 @@ void log_printf(const char* format, ...) {
   log_println(txBuffer);
 }
 
-/*
- * TIMER1 Prescaler Setup
- * 
- * CS12 CS11 CS10 Prescaler
- *  0    0    0      Timer Stop (No Clock)
- *  0    0    1      1
- *  0    1    0      8
- *  0    1    1      64
- *  1    0    0      256
- *  1    0    1      1024
- *  1    1    0      Ext Clock Falling Edge
- *  1    1    1      Ext Clock Rising Edge
- *
-*/
-static void SetupSysTickTimer(void) {
-  noInterrupts();  // disable all interrupts
-  TCCR1A = 0;
-  TCCR1B = 0;
-  TCNT1 = 0;
-  OCR1A = 16000000 / 256 / (1000 / CLOCK_TICK_RESOLUTION);  // compare match register 16MHz/256/f
-  TCCR1B |= (1 << WGM12);                                   // CTC mode
-  TCCR1B |= (1 << CS12);                                    // 256 prescaler
-  TCCR1B |= (0 << CS11);                                    // 256 prescaler
-  TCCR1B |= (0 << CS10);                                    // 256 prescaler
-  TIMSK1 |= (1 << OCIE1A);                                  // enable timer compare interrupt
-  interrupts();                                             // enable all interrupts
+// SetupSysTickTimer: Generates an interrupt every 20 ms (CLOCK_TICK_RESOLUTION)
+void SetupSysTickTimer() {
+  const int TIMER_NUM = 0;       // ESP32 has timers 0-3
+  const int PRESCALER = 80;      // 80 MHz / 80 = 1 MHz (1 us per tick)
+
+  hw_timer_t* sysTimer = timerBegin(TIMER_NUM, PRESCALER, true);  // countUp = true
+  timerAttachInterrupt(sysTimer, &onSysTick, true);   // Edge triggered
+
+  const uint64_t ALARM_VALUE_US = CLOCK_TICK_RESOLUTION * 1000;  // 20ms = 20000 us
+
+  timerAlarmWrite(sysTimer, ALARM_VALUE_US, true);   // Auto-reload = true
+  timerAlarmEnable(sysTimer);                        // Start timer
 }
