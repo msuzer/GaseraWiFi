@@ -1,17 +1,7 @@
-/*
- * To Upload Sketch, Set Dipswitches to:
- * OFF	OFF	ON	ON	OFF	OFF	OFF (Upload Sketch)
- * 
- * To Connect Serial Port, Set Dipswitches to:
- *
- * ON	  ON	ON	ON	OFF	OFF	OFF	NoUSE (USB to MEGA)
- *
- */
-
 #include <Arduino.h>
 #include <stdarg.h>
 #include <GyverOLED.h>
-#include <WiFi.h>  // Replace with your WiFi library
+#include <WiFi.h>
 #include <WiFiClient.h>
 #include "relay.h"
 #include "sys_config.h"
@@ -20,32 +10,18 @@
 
 #define MOTOR_FULL_MOVEMENT_TIME_SEC 60
 
+#define RCTriggerPin 27
+
 #define MOTOR_A_FORWARD_PIN  32
 #define MOTOR_A_REVERSE_PIN  33
 
-// Motor B Relay Pins
 #define MOTOR_B_FORWARD_PIN  25
 #define MOTOR_B_REVERSE_PIN  26
 
-#define RCTriggerPin 27    //
-
-#define MarkButtonPin 36  // BROWN
-#define DownButtonPin 39  // ORANGE
-#define UpButtonPin 34    // RED
-#define HomeButtonPin 35  // YELLOW
-
-#define BUTTON_NO_PRESS 0x00
-#define BUTTON_SHORT_PRESS 0x01
-#define BUTTON_LONG_PRESS 0x02
-
-#define RC_TASK_IDLE 0x00
-#define RC_TASK_TRIGGERED 0x04
-#define RC_TASK_ABORTED 0x08
-
-#define SERIAL_PORT_IDLE 0x00
-#define SERIAL_DATA_RECEIVED 0x10
-
-#define TIMER_OVF_OCCURRED 0x20
+#define MarkButtonPin 36
+#define DownButtonPin 39
+#define UpButtonPin 34
+#define HomeButtonPin 35
 
 static void checkRCTrigger(void);
 static void checkSerialData(void);
@@ -65,17 +41,25 @@ WiFiClient wifiClient;
 RelayMotorDriver motorA(MOTOR_A_FORWARD_PIN, MOTOR_A_REVERSE_PIN);
 RelayMotorDriver motorB(MOTOR_B_FORWARD_PIN, MOTOR_B_REVERSE_PIN);
 
-static uint8_t btnUpState = BUTTON_NO_PRESS;
-static uint8_t btnDownState = BUTTON_NO_PRESS;
-static uint8_t btnHomeState = BUTTON_NO_PRESS;
-static uint8_t btnMarkState = BUTTON_NO_PRESS;
+enum SystemEvent {
+  EVENT_NONE              = 0x00,
+  BUTTON_NO_PRESS         = 0x00,
+  BUTTON_SHORT_PRESS      = 0x01,
+  BUTTON_LONG_PRESS       = 0x02,
+  RC_TASK_IDLE            = 0x00,
+  RC_TASK_TRIGGERED       = 0x04,
+  RC_TASK_ABORTED         = 0x08,
+  SERIAL_PORT_IDLE        = 0x00,
+  SERIAL_DATA_RECEIVED    = 0x10,
+  TIMER_OVF_OCCURRED      = 0x20
+};
+
 static uint8_t RCTaskState = RC_TASK_IDLE;
 static uint8_t SerialPortState = SERIAL_PORT_IDLE;
 
-// Button IDs
 enum ButtonId { BTN_UP = 0, BTN_DOWN, BTN_HOME, BTN_MARK, BTN_COUNT };
 const uint8_t buttonPins[BTN_COUNT] = {UpButtonPin, DownButtonPin, HomeButtonPin, MarkButtonPin};
-volatile uint8_t* buttonStates[BTN_COUNT] = {&btnUpState, &btnDownState, &btnHomeState, &btnMarkState};
+volatile uint8_t buttonStates[BTN_COUNT] = {BUTTON_NO_PRESS, BUTTON_NO_PRESS, BUTTON_NO_PRESS, BUTTON_NO_PRESS};
 
 void checkButton(ButtonId id);
 
@@ -137,7 +121,6 @@ static void OnTimerOverFlowEvent(uint8_t idx) {
 
 static void ConnectionTask(uint8_t event, uint8_t idx) {
   static int state = 0;
-  char buf[16];
   int dev_status;
 
   if (event != TIMER_OVF_OCCURRED || idx != SYS_TMR1) {
@@ -155,13 +138,11 @@ static void ConnectionTask(uint8_t event, uint8_t idx) {
       }
       SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(2000));
       break;
-
     case 1:
       log_println("Connecting to GASERA");
       SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(2000));
       state = 2;
       break;
-
     case 2:
       if (gasera.getDeviceStatus(wifiClient, gaseraRxBuffer)) {
         dev_status = gasera.parseResponse(gaseraRxBuffer);
@@ -174,7 +155,6 @@ static void ConnectionTask(uint8_t event, uint8_t idx) {
       }
       SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(2000));
       break;
-
     case 3:
       if (gasera.setOnlineMeasurementMode(wifiClient, gaseraRxBuffer)) {
         dev_status = gasera.parseResponse(gaseraRxBuffer);
@@ -188,7 +168,6 @@ static void ConnectionTask(uint8_t event, uint8_t idx) {
       }
       SYS_TIMER_SetupTimer(SYS_TMR1, MS_To_Ticks(2000));
       break;
-
     default:
       break;
   }
@@ -353,24 +332,24 @@ static void handleMotorAction(RelayMotorDriver& motor, MotorDirection direction)
 }
 
 static void HandleAsyncEvents(void) {
-  if (btnHomeState == BUTTON_LONG_PRESS) {
+  if (buttonStates[BTN_HOME] == BUTTON_LONG_PRESS) {
     // HandleUserInstruction("reset");
-    btnHomeState = BUTTON_NO_PRESS;
-  } else if (btnMarkState == BUTTON_LONG_PRESS) {
+    buttonStates[BTN_HOME] = BUTTON_NO_PRESS;
+  } else if (buttonStates[BTN_MARK] == BUTTON_LONG_PRESS) {
     // HandleUserInstruction("gmark");
-    btnMarkState = BUTTON_NO_PRESS;
-  } else if (btnHomeState == BUTTON_SHORT_PRESS) {
+    buttonStates[BTN_MARK] = BUTTON_NO_PRESS;
+  } else if (buttonStates[BTN_HOME] == BUTTON_SHORT_PRESS) {
     handleMotorAction(motorA, MOTOR_UP);
-    btnHomeState = BUTTON_NO_PRESS;
-  } else if (btnMarkState == BUTTON_SHORT_PRESS) {
+    buttonStates[BTN_HOME] = BUTTON_NO_PRESS;
+  } else if (buttonStates[BTN_MARK] == BUTTON_SHORT_PRESS) {
     handleMotorAction(motorA, MOTOR_DOWN);
-    btnMarkState = BUTTON_NO_PRESS;
-  } else if (btnUpState == BUTTON_SHORT_PRESS) {
+    buttonStates[BTN_MARK] = BUTTON_NO_PRESS;
+  } else if (buttonStates[BTN_UP] == BUTTON_SHORT_PRESS) {
     handleMotorAction(motorB, MOTOR_UP);
-    btnUpState = BUTTON_NO_PRESS;
-  } else if (btnDownState == BUTTON_SHORT_PRESS) {
+    buttonStates[BTN_UP] = BUTTON_NO_PRESS;
+  } else if (buttonStates[BTN_DOWN] == BUTTON_SHORT_PRESS) {
     handleMotorAction(motorB, MOTOR_DOWN);
-    btnDownState = BUTTON_NO_PRESS;
+    buttonStates[BTN_DOWN] = BUTTON_NO_PRESS;
   } else if (SerialPortState == SERIAL_DATA_RECEIVED) {
     HandleUserInstruction(serialBuffer);
     SerialPortState = SERIAL_PORT_IDLE;
@@ -410,14 +389,14 @@ void checkButton(ButtonId id) {
   if (pinState == LOW) {
     if (buttonPinStatesOld[id] != pinState) {
       if (++buttonCounters[id] >= MS_To_Ticks(2000)) {
-        *buttonStates[id] = BUTTON_LONG_PRESS;
+        buttonStates[id] = BUTTON_LONG_PRESS;
         buttonPinStatesOld[id] = pinState;
         buttonCounters[id] = 0;
       }
     }
   } else {
     if (buttonCounters[id] >= MS_To_Ticks(100)) {
-      *buttonStates[id] = BUTTON_SHORT_PRESS;
+      buttonStates[id] = BUTTON_SHORT_PRESS;
     }
     buttonCounters[id] = 0;
     buttonPinStatesOld[id] = pinState;
