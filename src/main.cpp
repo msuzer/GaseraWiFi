@@ -6,25 +6,39 @@
 #include "relay.h"
 #include "sys_config.h"
 #include "sys_timer.h"
+#include "SerialHandler.h"
 #include "GaseraController.h"
 
 #define MOTOR_FULL_MOVEMENT_TIME_SEC 60
 
-#define RCTriggerPin 27
+#define MOTOR_A_FORWARD_PIN   22
+#define MOTOR_A_REVERSE_PIN   21
 
-#define MOTOR_A_FORWARD_PIN  32
-#define MOTOR_A_REVERSE_PIN  33
+// Motor B Relay Pins
+#define MOTOR_B_FORWARD_PIN   19
+#define MOTOR_B_REVERSE_PIN   18
 
-#define MOTOR_B_FORWARD_PIN  25
-#define MOTOR_B_REVERSE_PIN  26
+#define RCTriggerPin          13
 
-#define MarkButtonPin 36
-#define DownButtonPin 39
-#define UpButtonPin 34
-#define HomeButtonPin 35
+#define Motor1UpButtonPin     34
+#define Motor1DownButtonPin   35
+#define Motor2UpButtonPin     36
+#define Motor2DownButtonPin   39
+
+#define LimitSwitch1Pin       26
+#define LimitSwitch2Pin       27
+
+#define BUTTON_NO_PRESS 0x00
+#define BUTTON_SHORT_PRESS 0x01
+#define BUTTON_LONG_PRESS 0x02
+
+#define RC_TASK_IDLE 0x00
+#define RC_TASK_TRIGGERED 0x04
+#define RC_TASK_ABORTED 0x08
+
+#define TIMER_OVF_OCCURRED 0x20
 
 static void checkRCTrigger(void);
-static void checkSerialData(void);
 
 static void SetupSysTickTimer(void);
 static void OnTimerOverFlowEvent(uint8_t);
@@ -41,32 +55,36 @@ WiFiClient wifiClient;
 RelayMotorDriver motorA(MOTOR_A_FORWARD_PIN, MOTOR_A_REVERSE_PIN);
 RelayMotorDriver motorB(MOTOR_B_FORWARD_PIN, MOTOR_B_REVERSE_PIN);
 
-enum SystemEvent {
-  EVENT_NONE              = 0x00,
-  BUTTON_NO_PRESS         = 0x00,
-  BUTTON_SHORT_PRESS      = 0x01,
-  BUTTON_LONG_PRESS       = 0x02,
-  RC_TASK_IDLE            = 0x00,
-  RC_TASK_TRIGGERED       = 0x04,
-  RC_TASK_ABORTED         = 0x08,
-  SERIAL_PORT_IDLE        = 0x00,
-  SERIAL_DATA_RECEIVED    = 0x10,
-  TIMER_OVF_OCCURRED      = 0x20
-};
-
 static uint8_t RCTaskState = RC_TASK_IDLE;
-static uint8_t SerialPortState = SERIAL_PORT_IDLE;
 
-enum ButtonId { BTN_UP = 0, BTN_DOWN, BTN_HOME, BTN_MARK, BTN_COUNT };
-const uint8_t buttonPins[BTN_COUNT] = {UpButtonPin, DownButtonPin, HomeButtonPin, MarkButtonPin};
-volatile uint8_t buttonStates[BTN_COUNT] = {BUTTON_NO_PRESS, BUTTON_NO_PRESS, BUTTON_NO_PRESS, BUTTON_NO_PRESS};
+// Button IDs
+enum ButtonId { BTN1_UP = 0, BTN1_DOWN, BTN2_UP, BTN2_DOWN, RC_TRIG, BTN_COUNT };
+const uint8_t buttonPins[BTN_COUNT] = {Motor1UpButtonPin, Motor1DownButtonPin, Motor2UpButtonPin, Motor2DownButtonPin, RCTriggerPin};
+volatile uint8_t buttonStates[BTN_COUNT] = {BUTTON_NO_PRESS, BUTTON_NO_PRESS, BUTTON_NO_PRESS, BUTTON_NO_PRESS, RC_TASK_IDLE};
 
 void checkButton(ButtonId id);
 
 static bool GASERAReady = false;
 
 static char gaseraRxBuffer[64];
-static char serialBuffer[32];
+
+constexpr size_t bufferSize = 32;
+char bufferA[bufferSize];
+char bufferB[bufferSize];
+
+SerialHandler serialHandler(bufferA, bufferB, bufferSize);
+
+void onSerialMessage(const char* message, size_t length) {
+    Serial.print("Received: ");
+    Serial.write(message, length);
+    Serial.println();
+    
+    if (serialHandler.isMessageTruncated()) {
+        Serial.println("Warning: Message was truncated!");
+    }
+
+    HandleUserInstruction(message);
+}
 
 void setup() {
 
@@ -74,11 +92,17 @@ void setup() {
   while (!Serial)
     ;
 
+  pinMode(Motor1UpButtonPin, INPUT_PULLUP);
+  pinMode(Motor1DownButtonPin, INPUT_PULLUP);
+  pinMode(Motor2UpButtonPin, INPUT_PULLUP);
+  pinMode(Motor2DownButtonPin, INPUT_PULLUP);
+
+  pinMode(LimitSwitch1Pin, INPUT_PULLUP);
+  pinMode(LimitSwitch2Pin, INPUT_PULLUP);
+
   pinMode(RCTriggerPin, INPUT_PULLUP);
-  pinMode(UpButtonPin, INPUT_PULLUP);
-  pinMode(DownButtonPin, INPUT_PULLUP);
-  pinMode(HomeButtonPin, INPUT_PULLUP);
-  pinMode(MarkButtonPin, INPUT_PULLUP);
+
+  serialHandler.setCallback(onSerialMessage);
 
   motorA.begin();
   motorB.begin();
@@ -100,18 +124,24 @@ void setup() {
 }
 
 void loop() {
+  while (Serial.available()) {
+    char c = Serial.read();
+    serialHandler.onReceiveChar(c);
+  }
+
+  serialHandler.process();
   SYS_TIMER_Main_Tasks();
   HandleAsyncEvents();
 }
 
 void IRAM_ATTR onSysTick() {
   SYS_TIMER_Periodic_Tasks();
-  checkSerialData();
   checkRCTrigger();
-  checkButton(BTN_UP);
-  checkButton(BTN_DOWN);
-  checkButton(BTN_HOME);
-  checkButton(BTN_MARK);
+  checkButton(BTN1_UP);
+  checkButton(BTN1_DOWN);
+  checkButton(BTN2_UP);
+  checkButton(BTN2_DOWN);
+  checkButton(RC_TRIG);
 }
 
 static void OnTimerOverFlowEvent(uint8_t idx) {
@@ -332,27 +362,18 @@ static void handleMotorAction(RelayMotorDriver& motor, MotorDirection direction)
 }
 
 static void HandleAsyncEvents(void) {
-  if (buttonStates[BTN_HOME] == BUTTON_LONG_PRESS) {
-    // HandleUserInstruction("reset");
-    buttonStates[BTN_HOME] = BUTTON_NO_PRESS;
-  } else if (buttonStates[BTN_MARK] == BUTTON_LONG_PRESS) {
-    // HandleUserInstruction("gmark");
-    buttonStates[BTN_MARK] = BUTTON_NO_PRESS;
-  } else if (buttonStates[BTN_HOME] == BUTTON_SHORT_PRESS) {
+  if (buttonStates[BTN1_UP] == BUTTON_SHORT_PRESS) {
     handleMotorAction(motorA, MOTOR_UP);
-    buttonStates[BTN_HOME] = BUTTON_NO_PRESS;
-  } else if (buttonStates[BTN_MARK] == BUTTON_SHORT_PRESS) {
+    buttonStates[BTN1_UP] = BUTTON_NO_PRESS;
+  } else if (buttonStates[BTN1_DOWN] == BUTTON_SHORT_PRESS) {
     handleMotorAction(motorA, MOTOR_DOWN);
-    buttonStates[BTN_MARK] = BUTTON_NO_PRESS;
-  } else if (buttonStates[BTN_UP] == BUTTON_SHORT_PRESS) {
+    buttonStates[BTN1_DOWN] = BUTTON_NO_PRESS;
+  } else if (buttonStates[BTN2_UP] == BUTTON_SHORT_PRESS) {
     handleMotorAction(motorB, MOTOR_UP);
-    buttonStates[BTN_UP] = BUTTON_NO_PRESS;
-  } else if (buttonStates[BTN_DOWN] == BUTTON_SHORT_PRESS) {
+    buttonStates[BTN2_UP] = BUTTON_NO_PRESS;
+  } else if (buttonStates[BTN2_DOWN] == BUTTON_SHORT_PRESS) {
     handleMotorAction(motorB, MOTOR_DOWN);
-    buttonStates[BTN_DOWN] = BUTTON_NO_PRESS;
-  } else if (SerialPortState == SERIAL_DATA_RECEIVED) {
-    HandleUserInstruction(serialBuffer);
-    SerialPortState = SERIAL_PORT_IDLE;
+    buttonStates[BTN2_DOWN] = BUTTON_NO_PRESS;
   } else if (RCTaskState == RC_TASK_TRIGGERED) {
     MeasurementTask(RC_TASK_TRIGGERED, 0);
   } else if (RCTaskState == RC_TASK_ABORTED) {
@@ -400,26 +421,6 @@ void checkButton(ButtonId id) {
     }
     buttonCounters[id] = 0;
     buttonPinStatesOld[id] = pinState;
-  }
-}
-
-static void checkSerialData(void) {
-  static int i = 0;
-  char inChar;
-
-  while (Serial.available()) {
-    inChar = Serial.read();
-    if (inChar > 0) {
-      if (i < 32) {
-        serialBuffer[i++] = inChar;
-      } else {
-        i = 0;
-      }
-      if (inChar == '\n') {
-        i = 0;
-        SerialPortState = SERIAL_DATA_RECEIVED;
-      }
-    }
   }
 }
 
