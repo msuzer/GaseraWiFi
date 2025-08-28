@@ -42,13 +42,6 @@ public:
 
 private:
     GaseraController() = default;
-    // Prevent copy
-    GaseraController(const GaseraController&) = delete;
-    GaseraController& operator=(const GaseraController&) = delete;
-
-    // Prevent move
-    GaseraController(GaseraController&&) = delete;
-    GaseraController& operator=(GaseraController&&) = delete;
 
     bool connectionEstablished = false;
     uint8_t RCTaskState = RC_TASK_IDLE;

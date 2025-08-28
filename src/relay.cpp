@@ -23,8 +23,8 @@ void RelayMotorDriver::reverse() {
 }
 
 void RelayMotorDriver::stop() {
-  digitalWrite(forwardPin, HIGH);  // Both OFF
-  digitalWrite(reversePin, HIGH);
+  digitalWrite(forwardPin, LOW);  // Both OFF
+  digitalWrite(reversePin, LOW);
   moving = false;
   lastStopReason = STOPPED_BY_USER; // Reset stop reason
 }

@@ -60,14 +60,14 @@ void onSerialMessage(const char* message, size_t length) {
   String request = String(message, length);
   request.trim();
 
-  LogUtils::info("Received Serial Message: %s", message);
+  LogUtils::info("Received Serial Message: %s\n", message);
 
   if (serialHandler.isMessageTruncated()) {
-      LogUtils::warn("Message was truncated!");
+      LogUtils::warn("Message was truncated!\n");
   }
 
   String response = ApiHandler::handleRequest(request);
-  LogUtils::info("Response: %s", response.c_str());
+  LogUtils::info("Response: %s\n", response.c_str());
 }
 
 void handleApiRequest() {
@@ -92,6 +92,8 @@ void setup() {
   pinMode(MotorBLimitSwitchPin, INPUT_PULLUP);
 
   pinMode(RCTriggerPin, INPUT_PULLUP);
+  pinMode(UserLEDPin, OUTPUT);
+  pinMode(BuzzerPin, OUTPUT);
 
   serialHandler.setCallback(onSerialMessage);
   GaseraProtocol::setClient(wifiClient);
@@ -104,10 +106,10 @@ void setup() {
   oled.setScale(2);
 
   SetupSysTickTimer();
-  LogUtils::info("GASERA Remote Control Project");
+  LogUtils::info("GASERA Remote Control Project\n");
 
   WiFi.begin(NAME_OF_SSID, PASSWORD_OF_SSID);
-  LogUtils::info("Connecting to WiFi...");
+  LogUtils::info("Connecting to WiFi...\n");
   Timer::start(TMR_CHECK_CONNECTION, 1000);  // Check connection every second
 }
 
@@ -145,18 +147,19 @@ static void ConnectionMonitoringTask() {
   if (Timer::expired(TMR_CHECK_CONNECTION)) {
     Timer::restart(TMR_CHECK_CONNECTION, 1000);  // Reset timer for next check
     bool wifiConnected = WiFi.status() == WL_CONNECTED;
+    digitalWrite(UserLEDPin, wifiConnected ? HIGH : LOW);
 
     if (connectionStatus != wifiConnected) {
       connectionStatus = wifiConnected;
-      LogUtils::info("WiFi connection status changed: %s", wifiConnected ? "Connected" : "Disconnected");
+      LogUtils::info("WiFi connection status changed: %s\n", wifiConnected ? "Connected" : "Disconnected");
 
       GaseraController::getInstance().setConnectionEstablished(wifiConnected);
       if (!wifiConnected) {
-        LogUtils::warn("WiFi not connected, retrying...");
+        LogUtils::warn("WiFi not connected, retrying...\n");
         WiFi.reconnect();
       } else {
         IPAddress ip = WiFi.localIP();
-        LogUtils::info("IP: %u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+        LogUtils::info("IP: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
 
         server.onNotFound(handleApiRequest);
         server.on("/", HTTP_GET, []() {
@@ -164,7 +167,7 @@ static void ConnectionMonitoringTask() {
         });
 
         server.begin();  // ✅ Start HTTP server AFTER registering routes
-        LogUtils::info("HTTP server started.");
+        LogUtils::info("HTTP server started.\n");
       }
     }
   }

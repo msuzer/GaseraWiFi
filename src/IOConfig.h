@@ -9,11 +9,12 @@
 
 #define RCTriggerPin          13
 #define UserLEDPin            14
+#define BuzzerPin             23
 
-#define UserButton1Pin        34
-#define UserButton2Pin        35
-#define UserButton3Pin        36
-#define UserButton4Pin        39
+#define UserButton1Pin        36
+#define UserButton2Pin        39
+#define UserButton3Pin        34
+#define UserButton4Pin        35
 
 #define MotorALimitSwitchPin  26
 #define MotorBLimitSwitchPin  27

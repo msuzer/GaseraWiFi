@@ -34,13 +34,17 @@ void GaseraController::logState(TaskState s) {
 
 void GaseraController::MeasurementTask() {
     auto& gasera = getInstance();
+    static bool connectionStatusLast = true;
 
-    if (!gasera.isConnectionEstablished()) {
+    bool connectionStatus = gasera.isConnectionEstablished();
+    if (connectionStatusLast != connectionStatus && !connectionStatus) {
+        connectionStatusLast = connectionStatus;
         LogUtils::warn("GASERA connection not established.\n");
         gasera.state = TaskState::Idle;
         gasera.RCTaskState = RC_TASK_IDLE;
         return;
     }
+    connectionStatusLast = connectionStatus;
 
     switch (gasera.state) {
         case TaskState::Idle:
